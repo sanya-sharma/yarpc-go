@@ -552,6 +552,99 @@ func TestTransportSpec(t *testing.T) {
 			},
 			wantErrors: []string{"outbound TLS enforced but outbound TLS config provider is nil"},
 		},
+		{
+			desc: "negative minConnections",
+			transportCfg: attrs{
+				"clientConnectionPool": attrs{
+					"minConnections": "-1",
+				},
+			},
+			outboundCfg: attrs{
+				"myservice": attrs{
+					TransportName: attrs{"address": "localhost:54580"},
+				},
+			},
+			wantErrors: []string{"clientConnectionPool.minConnections must be non-negative"},
+		},
+		{
+			desc: "negative maxConnections",
+			transportCfg: attrs{
+				"clientConnectionPool": attrs{
+					"maxConnections": "-1",
+				},
+			},
+			outboundCfg: attrs{
+				"myservice": attrs{
+					TransportName: attrs{"address": "localhost:54581"},
+				},
+			},
+			wantErrors: []string{"clientConnectionPool.maxConnections must be non-negative"},
+		},
+		{
+			desc: "maxConnections less than minConnections",
+			transportCfg: attrs{
+				"clientConnectionPool": attrs{
+					"minConnections": "5",
+					"maxConnections": "2",
+				},
+			},
+			outboundCfg: attrs{
+				"myservice": attrs{
+					TransportName: attrs{"address": "localhost:54582"},
+				},
+			},
+			wantErrors: []string{"clientConnectionPool.maxConnections (2) must be >= minConnections (5)"},
+		},
+		{
+			desc: "minConnections exceeds default maxConnections",
+			transportCfg: attrs{
+				"clientConnectionPool": attrs{
+					"minConnections": "10",
+				},
+			},
+			outboundCfg: attrs{
+				"myservice": attrs{
+					TransportName: attrs{"address": "localhost:54583"},
+				},
+			},
+			wantErrors: []string{"clientConnectionPool.maxConnections (5) must be >= minConnections (10)"},
+		},
+		{
+			desc: "scaleUpThreshold out of range",
+			transportCfg: attrs{
+				"clientConnectionPool": attrs{
+					"scaleUpThreshold": "1.5",
+				},
+			},
+			outboundCfg: attrs{
+				"myservice": attrs{
+					TransportName: attrs{"address": "localhost:54584"},
+				},
+			},
+			wantErrors: []string{"clientConnectionPool.scaleUpThreshold must be in [0, 1]"},
+		},
+		{
+			desc: "valid connection pool config",
+			transportCfg: attrs{
+				"clientConnectionPool": attrs{
+					"minConnections":       "2",
+					"maxConnections":       "8",
+					"scaleUpThreshold":     "0.7",
+					"maxConcurrentStreams": "200",
+					"idleTimeout":          "10m",
+				},
+			},
+			outboundCfg: attrs{
+				"myservice": attrs{
+					TransportName: attrs{"address": "localhost:54585"},
+				},
+			},
+			wantOutbounds: map[string]wantOutbound{
+				"myservice": {
+					Address: "localhost:54585",
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -718,13 +811,13 @@ func TestContextDialerOptionUsage(t *testing.T) {
 	require.True(t, ok, "expected a gRPC peer")
 
 	for {
-		state := grpcPeer.clientConn.GetState()
+		state := grpcPeer.conns[0].clientConn.GetState()
 		if state == connectivity.Ready {
 			break
 		}
-		grpcPeer.clientConn.WaitForStateChange(ctx, state)
+		grpcPeer.conns[0].clientConn.WaitForStateChange(ctx, state)
 	}
-	require.Equal(t, connectivity.Ready, grpcPeer.clientConn.GetState(), "expected gRPC connection in Ready state")
+	require.Equal(t, connectivity.Ready, grpcPeer.conns[0].clientConn.GetState(), "expected gRPC connection in Ready state")
 	require.Equal(t, 1, dialContextInvoked, "counter should increment by one from dialer invocation")
 }
 
