@@ -1,0 +1,19 @@
+logs and metrics testing
+
+# Please enter the commit message for your changes. Lines starting
+# with '#' will be ignored, and an empty message aborts the commit.
+#
+# interactive rebase in progress; onto e4d1a2a8
+# Last commands done (2 commands done):
+#    pick 7b68138a [yarpc][go] Removing yaml read for controlled rollout
+#    pick 688bf377 logs and metrics testing
+# No commands remaining.
+# You are currently rebasing branch 'feature-grpc-connection-pooling-logs-metrics' on 'e4d1a2a8'.
+#
+# Changes to be committed:
+#	modified:   transport/grpc/client_conn_wrapper.go
+#	modified:   transport/grpc/config.go
+#	modified:   transport/grpc/conn_pool_scaler.go
+#	modified:   transport/grpc/options.go
+#	modified:   transport/grpc/peer.go
+#

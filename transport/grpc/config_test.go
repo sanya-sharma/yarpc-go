@@ -721,9 +721,9 @@ func TestTransportSpec(t *testing.T) {
 			},
 		},
 		{
-			desc: "YAML dynamicScalingEnabled:true is ignored (OC controls enabling)",
-			// YAML true alone must not enable dynamic scaling — only OC can.
-			// The transport should build successfully; enabling is via programmatic option.
+			desc: "YAML dynamicScalingEnabled:true enables scaling (local dev override)",
+			// YAML true applies the option directly — useful for local testing without OC.
+			// In production, OC sets it programmatically before config options are applied.
 			transportCfg: attrs{
 				"clientConnectionPool": attrs{
 					"dynamicScalingEnabled": true,

@@ -115,15 +115,17 @@ type TransportConfig struct {
 //	      scalingMonitorInterval: 30s   # how often to evaluate scale-down and idle cleanup
 type ClientConnectionPoolConfig struct {
 	// DynamicScalingEnabled controls the background connection scaling monitor.
-	// This field uses a pointer so that YAML "not set" and "explicitly false" can
+	// This field uses a pointer so that YAML "not set" and explicit values can
 	// be distinguished:
 	//
 	//   - nil (field omitted from YAML): the central ObjectConfig value is used.
 	//   - false (explicitly set in YAML): always disabled, overrides ObjectConfig.
-	//   - true (explicitly set in YAML): ignored — enabling requires ObjectConfig.
+	//   - true (explicitly set in YAML): enabled; useful for local development and
+	//     testing without ObjectConfig. In production, OC sets this programmatically
+	//     before config options are applied, so YAML true acts as a fallback.
 	//
-	// In practice, services should leave this field unset and rely on ObjectConfig.
-	// Set it to false only to explicitly opt out of dynamic scaling for this service.
+	// In practice, production services should leave this field unset and rely on
+	// ObjectConfig. Set it to false to explicitly opt out, or true for local testing.
 	DynamicScalingEnabled *bool `config:"dynamicScalingEnabled"`
 
 	// MaxConcurrentStreams is the assumed HTTP/2 SETTINGS_MAX_CONCURRENT_STREAMS
@@ -155,10 +157,17 @@ type ClientConnectionPoolConfig struct {
 	// Defaults to 15 minutes.
 	IdleTimeout time.Duration `config:"idleTimeout"`
 
-	// ScalingMonitorInterval is how often the background monitor evaluates
-	// the pool for scale-down and idle cleanup.
-	// Defaults to 30 seconds.
+	// ScalingMonitorInterval controls how often the background scaling monitor
+	// checks for scale-down and idle-connection cleanup.
+	// Defaults to 30 seconds. Lower values (e.g. 1s) make scale-down and
+	// idle-reactivation observable in short test runs.
 	ScalingMonitorInterval time.Duration `config:"scalingMonitorInterval"`
+
+	// MetricsFile is the path to a CSV file where pool-state snapshots are
+	// appended on each monitor tick.  Columns: timestamp, peer, active,
+	// draining, idle, total_streams, scale_ups, scale_downs, reactivations.
+	// Leave empty to disable file output.
+	MetricsFile string `config:"metricsFile"`
 }
 
 // InboundConfig configures a gRPC Inbound.
@@ -438,12 +447,14 @@ func (t *transportSpec) buildTransport(transportConfig *TransportConfig, kit *ya
 	if cp.ScalingMonitorInterval < 0 {
 		return nil, fmt.Errorf("clientConnectionPool.scalingMonitorInterval must be non-negative, got %v", cp.ScalingMonitorInterval)
 	}
-	// DynamicScalingEnabled is only applied when explicitly set to false in YAML,
-	// which acts as a service-level opt-out that overrides the central OC value.
-	// YAML true and YAML unset both leave the OC-provided programmatic option intact.
-	// This means: enabling requires OC to set it; services can only opt out via YAML.
-	if cp.DynamicScalingEnabled != nil && !*cp.DynamicScalingEnabled {
-		options = append(options, WithDynamicConnectionScaling(false))
+	// DynamicScalingEnabled: apply the YAML value when explicitly set.
+	// - false: service-level opt-out, overrides OC.
+	// - true: local override for development/testing; in production OC controls
+	//   this via a programmatic option applied before config options, so YAML
+	//   true acts as a fallback when OC has not set it.
+	// - nil (omitted): leave whatever OC set via the programmatic option.
+	if cp.DynamicScalingEnabled != nil {
+		options = append(options, WithDynamicConnectionScaling(*cp.DynamicScalingEnabled))
 	}
 	if cp.MaxConcurrentStreams > 0 {
 		options = append(options, MaxConcurrentStreams(cp.MaxConcurrentStreams))
@@ -465,6 +476,9 @@ func (t *transportSpec) buildTransport(transportConfig *TransportConfig, kit *ya
 	}
 	if cp.ScalingMonitorInterval > 0 {
 		options = append(options, ScalingMonitorInterval(cp.ScalingMonitorInterval))
+	}
+	if cp.MetricsFile != "" {
+		options = append(options, ConnPoolMetricsFile(cp.MetricsFile))
 	}
 	backoffStrategy, err := transportConfig.Backoff.Strategy()
 	if err != nil {

@@ -21,6 +21,8 @@
 package grpc
 
 import (
+	"fmt"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -62,6 +64,44 @@ func (p *grpcPeer) runScalingMonitor() {
 func (p *grpcPeer) evaluateScaling() {
 	p.cleanupIdleConns()
 	p.maybeScaleDown()
+
+	// Collect pool state snapshot.
+	var active, draining, idle int32
+	var totalStreams int32
+	for _, c := range p.loadConns() {
+		switch c.getState() {
+		case connStateActive:
+			active++
+			totalStreams += c.getStreamCount()
+		case connStateDraining:
+			draining++
+			totalStreams += c.getStreamCount()
+		case connStateIdle:
+			idle++
+		}
+	}
+
+	// Collect and reset per-tick event counters.
+	scaleUps := atomic.SwapInt32(&p.scaleUpCount, 0)
+	scaleDowns := atomic.SwapInt32(&p.scaleDownCount, 0)
+	reactivations := atomic.SwapInt32(&p.reactivationCount, 0)
+
+	p.t.options.logger.Debug("grpc: connection pool state",
+		zap.String("peer", p.HostPort()),
+		zap.Int32("active", active),
+		zap.Int32("draining", draining),
+		zap.Int32("idle", idle),
+		zap.Int32("total_streams", totalStreams),
+		zap.Int32("max_concurrent_streams", p.poolCfg.maxConcurrentStreams),
+		zap.Int32("scale_up_threshold", int32(float64(p.poolCfg.maxConcurrentStreams)*p.poolCfg.scaleUpThreshold)),
+		zap.Int32("scale_ups", scaleUps),
+		zap.Int32("scale_downs", scaleDowns),
+		zap.Int32("reactivations", reactivations),
+	)
+
+	if p.poolCfg.metricsFile != "" {
+		p.writeMetricsLine(active, draining, idle, totalStreams, scaleUps, scaleDowns, reactivations)
+	}
 }
 
 // maybeScaleDown checks whether the pool can be reduced by one connection.
@@ -123,10 +163,18 @@ func (p *grpcPeer) maybeScaleDown() {
 		return
 	}
 
-	p.t.options.logger.Debug("grpc: marked connection for draining during scale-down",
+	p.t.options.logger.Debug("grpc: scale-down: marked connection for draining",
 		zap.String("peer", p.HostPort()),
-		zap.Int32("stream_count", mostLoaded.getStreamCount()))
+		zap.Int("active_connections_before", len(active)),
+		zap.Int("active_connections_after", len(active)-1),
+		zap.Int("min_connections", p.poolCfg.minConnections),
+		zap.Int32("total_streams", totalStreams),
+		zap.Int32("draining_conn_stream_count", mostLoaded.getStreamCount()),
+		zap.Int32("capacity_after_drain", capacityAfterDrain),
+		zap.Int32("scale_up_threshold_streams", scaleDownThreshold),
+	)
 	p.metrics.incScaleDown()
+	atomic.AddInt32(&p.scaleDownCount, 1)
 	p.refreshPoolMetrics()
 }
 
@@ -209,7 +257,8 @@ func (p *grpcPeer) tryScaleUp(leastLoadedConn *grpcClientConnWrapper) {
 	}
 
 	threshold := int32(float64(p.poolCfg.maxConcurrentStreams) * p.poolCfg.scaleUpThreshold)
-	if leastLoadedConn.getStreamCount() < threshold {
+	streamCount := leastLoadedConn.getStreamCount()
+	if streamCount < threshold {
 		return
 	}
 
@@ -224,9 +273,14 @@ func (p *grpcPeer) tryScaleUp(leastLoadedConn *grpcClientConnWrapper) {
 
 		// Prefer reactivating an idle connection over dialing a new one.
 		if p.reactivateIdleConn() {
-			p.t.options.logger.Debug("grpc: reactivated idle connection during scale-up",
-				zap.String("peer", p.HostPort()))
+			totalConns := int(p.connCount.Load())
+			p.t.options.logger.Debug("grpc: scaled up by reactivating idle connection",
+				zap.String("peer", p.HostPort()),
+				zap.Int("total_connections", totalConns),
+				zap.Int("max_connections", p.poolCfg.maxConnections),
+			)
 			p.metrics.incIdleReactivation()
+			atomic.AddInt32(&p.reactivationCount, 1)
 			p.refreshPoolMetrics()
 			return
 		}
@@ -234,17 +288,29 @@ func (p *grpcPeer) tryScaleUp(leastLoadedConn *grpcClientConnWrapper) {
 		// No idle connection available; dial a new one if below the cap.
 		// connCount is maintained atomically — no mutex needed for this check.
 		if int(p.connCount.Load()) >= p.poolCfg.maxConnections {
+			p.t.options.logger.Debug("grpc: scale-up skipped: at maximum connection cap",
+				zap.String("peer", p.HostPort()),
+				zap.Int("max_connections", p.poolCfg.maxConnections),
+			)
 			return
 		}
 
 		if err := p.addConn(); err != nil {
 			p.t.options.logger.Warn("grpc: failed to scale up connection pool",
 				zap.String("peer", p.HostPort()),
+				zap.Int("max_connections", p.poolCfg.maxConnections),
 				zap.Error(err))
 		} else {
-			p.t.options.logger.Debug("grpc: scaled up connection pool",
-				zap.String("peer", p.HostPort()))
+			connsAfter := int(p.connCount.Load())
+			p.t.options.logger.Debug("grpc: scaled up by dialing new connection",
+				zap.String("peer", p.HostPort()),
+				zap.Int("connections_after", connsAfter),
+				zap.Int("max_connections", p.poolCfg.maxConnections),
+				zap.Int32("least_loaded_stream_count", streamCount),
+				zap.Int32("scale_up_threshold_streams", threshold),
+			)
 			p.metrics.incScaleUp()
+			atomic.AddInt32(&p.scaleUpCount, 1)
 		}
 	}()
 }
@@ -266,6 +332,11 @@ func (p *grpcPeer) reactivateIdleConn() bool {
 		if c.getState() == connStateIdle && c.ctx.Err() == nil {
 			if c.transitionState(connStateIdle, connStateActive) {
 				atomic.StoreInt64(&c.lastIdleAtNano, 0)
+				p.t.options.logger.Debug("grpc: idle connection reactivated (idle -> active)",
+					zap.String("peer", p.HostPort()),
+					zap.Int32("stream_count", c.getStreamCount()),
+					zap.Time("conn_created_at", c.createdAt),
+				)
 				return true
 			}
 		}
@@ -304,4 +375,23 @@ func (p *grpcPeer) refreshPoolMetrics() {
 	p.metrics.setConnectionCount(active)
 	p.metrics.setDrainingConnectionCount(draining)
 	p.metrics.setIdleConnectionCount(idle)
+}
+
+// writeMetricsLine appends a CSV row to p.poolCfg.metricsFile, writing a
+// header line first if the file is new or empty.
+func (p *grpcPeer) writeMetricsLine(active, draining, idle, totalStreams, scaleUps, scaleDowns, reactivations int32) {
+	f, err := os.OpenFile(p.poolCfg.metricsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err == nil && fi.Size() == 0 {
+		fmt.Fprintf(f, "timestamp,peer,active,draining,idle,total_streams,scale_ups,scale_downs,reactivations\n")
+	}
+	fmt.Fprintf(f, "%s,%s,%d,%d,%d,%d,%d,%d,%d\n",
+		time.Now().Format(time.RFC3339),
+		p.HostPort(),
+		active, draining, idle, totalStreams,
+		scaleUps, scaleDowns, reactivations,
+	)
 }

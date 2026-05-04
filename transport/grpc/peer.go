@@ -49,6 +49,12 @@ type grpcPeer struct {
 	// running.  This prevents multiple concurrent scale-up operations.
 	isScaling int32 // accessed atomically
 
+	// Per-tick event counters — atomically incremented by scale-up/down/reactivate
+	// paths and swapped to 0 each evaluateScaling tick for CSV output.
+	scaleUpCount      int32 // accessed atomically
+	scaleDownCount    int32 // accessed atomically
+	reactivationCount int32 // accessed atomically
+
 	// connWg tracks active monitorConnWrapper goroutines.
 	// stoppedC is closed once all goroutines finish after the peer is stopped.
 	connWg sync.WaitGroup
@@ -135,6 +141,7 @@ func (t *Transport) newPeer(address string, options *dialOptions) (*grpcPeer, er
 			maxConnections:         t.options.clientConnPoolMaxConnections,
 			idleTimeout:            t.options.clientConnPoolIdleTimeout,
 			scalingMonitorInterval: t.options.clientConnPoolScalingMonitorInterval,
+			metricsFile:            t.options.clientConnPoolMetricsFile,
 		},
 	}
 	t.options.logger.Debug("grpc: connection pool config resolved",
@@ -163,6 +170,17 @@ func (t *Transport) newPeer(address string, options *dialOptions) (*grpcPeer, er
 			return nil, err
 		}
 	}
+
+	p.t.options.logger.Debug("grpc: peer created with pool config",
+		zap.String("peer", address),
+		zap.Bool("dynamic_scaling_enabled", p.poolCfg.dynamicScalingEnabled),
+		zap.Int32("max_concurrent_streams", p.poolCfg.maxConcurrentStreams),
+		zap.Float64("scale_up_threshold", p.poolCfg.scaleUpThreshold),
+		zap.Int("min_connections", p.poolCfg.minConnections),
+		zap.Int("max_connections", p.poolCfg.maxConnections),
+		zap.Duration("idle_timeout", p.poolCfg.idleTimeout),
+		zap.Duration("scaling_monitor_interval", p.poolCfg.scalingMonitorInterval),
+	)
 
 	if p.poolCfg.dynamicScalingEnabled {
 		go p.runScalingMonitor()

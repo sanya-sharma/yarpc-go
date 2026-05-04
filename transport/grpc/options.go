@@ -62,7 +62,7 @@ const (
 	defaultClientConnPoolMinConnections         int           = 1
 	defaultClientConnPoolMaxConnections         int           = 5
 	defaultClientConnPoolIdleTimeout            time.Duration = 15 * time.Minute
-	defaultClientConnPoolScalingMonitorInterval time.Duration = 30 * time.Second
+	defaultClientConnPoolScalingMonitorInterval time.Duration = 30 * time.Millisecond
 )
 
 // Option is an interface shared by TransportOption, InboundOption, and OutboundOption
@@ -273,6 +273,17 @@ func MaxConnections(n int) TransportOption {
 	}
 }
 
+// ScalingMonitorInterval sets how often the background scaling monitor
+// evaluates the pool for scale-down and idle-connection cleanup.
+//
+// The default is 30 seconds. Lower values (e.g. 1s) are useful for testing
+// scale-down and idle-reactivation behavior under short-duration load patterns.
+func ScalingMonitorInterval(d time.Duration) TransportOption {
+	return func(transportOptions *transportOptions) {
+		transportOptions.clientConnPoolScalingMonitorInterval = d
+	}
+}
+
 // ConnIdleTimeout sets how long a fully-drained connection remains idle before
 // YARPC closes it and removes it from the pool.
 //
@@ -283,15 +294,16 @@ func ConnIdleTimeout(d time.Duration) TransportOption {
 	}
 }
 
-// ScalingMonitorInterval sets how often the background monitor goroutine
-// evaluates the connection pool for scale-down and idle cleanup.
-//
-// The default is 30 seconds.
-func ScalingMonitorInterval(d time.Duration) TransportOption {
+// ConnPoolMetricsFile sets a file path where the connection pool writes a
+// CSV snapshot on each monitor tick.  Each row contains: timestamp, peer,
+// active, draining, idle, total_streams, scale_ups, scale_downs,
+// reactivations.  An empty string (the default) disables file output.
+func ConnPoolMetricsFile(path string) TransportOption {
 	return func(transportOptions *transportOptions) {
-		transportOptions.clientConnPoolScalingMonitorInterval = d
+		transportOptions.clientConnPoolMetricsFile = path
 	}
 }
+
 
 // WithDynamicConnectionScaling enables or disables automatic gRPC connection
 // pool scaling based on stream utilization.
@@ -454,6 +466,7 @@ type transportOptions struct {
 	clientConnPoolIdleTimeout            time.Duration
 	clientConnPoolScalingMonitorInterval time.Duration
 	clientConnPoolDynamicScalingEnabled  bool
+	clientConnPoolMetricsFile                  string
 }
 
 func newTransportOptions(options []TransportOption) *transportOptions {

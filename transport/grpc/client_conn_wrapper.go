@@ -70,9 +70,13 @@ type connPoolConfig struct {
 	// idleTimeout is how long a drained connection stays idle before it is
 	// closed and removed from the pool.
 	idleTimeout time.Duration
+
 	// scalingMonitorInterval is how often the background monitor evaluates
 	// the pool for scale-down and idle cleanup.
 	scalingMonitorInterval time.Duration
+	// metricsFile is the path to a CSV file where pool state snapshots are
+	// written on each monitor tick.  Empty string disables file output.
+	metricsFile string
 }
 
 // grpcClientConnWrapper wraps a single *grpc.ClientConn with connection-pool
