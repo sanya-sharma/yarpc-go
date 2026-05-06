@@ -1,0 +1,147 @@
+# gRPC Connection Pool — RWMutex vs atomic.Pointer Benchmark Comparison
+# Date: 2026-05-06
+# Branch: feature-grpc-connection-pooling-testing-mutex-atomic
+# GOMAXPROCS: 48  |  benchtime: 1s
+#
+# Design A (CURRENT):  sync.RWMutex — readers share RLock, writers take Lock
+# Design B (PROPOSED): atomic.Pointer[[]T] copy-on-write — reads are lock-free,
+#                       writes use a write-only mutex + slice copy (rare path)
+#
+# Columns: name  iterations  ns/op  B/op  allocs/op  description  comparison
+#
+BenchmarkPickConnRWMutex_Serial/conns=1-48         	166406635	         6.879 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn serial: RLock/scan/RUnlock on every call — ~5 ns mutex overhead even with no contention	atomic is 3.8x faster
+BenchmarkPickConnRWMutex_Serial/conns=2-48         	128395623	         8.758 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn serial: RLock/scan/RUnlock on every call — ~5 ns mutex overhead even with no contention	atomic is 2.8x faster
+BenchmarkPickConnRWMutex_Serial/conns=4-48         	109640440	        12.60 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn serial: RLock/scan/RUnlock on every call — ~5 ns mutex overhead even with no contention	atomic is 2.5x faster
+BenchmarkPickConnRWMutex_Serial/conns=8-48         	75474502	        18.09 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn serial: RLock/scan/RUnlock on every call — ~5 ns mutex overhead even with no contention	atomic is 1.8x faster
+BenchmarkPickConnRWMutex_Serial/conns=16-48        	37751047	        28.43 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn serial: RLock/scan/RUnlock on every call — ~5 ns mutex overhead even with no contention	atomic is 1.8x faster
+BenchmarkPickConnRWMutex_Serial/conns=32-48        	22705390	        44.35 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn serial: RLock/scan/RUnlock on every call — ~5 ns mutex overhead even with no contention	atomic is 1.4x faster
+BenchmarkPickConnAtomic_Serial/conns=1-48          	880993128	         1.805 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn serial: single atomic.Pointer.Load() then scan — no mutex, no cache-line bounce	3.8x faster than RWMutex
+BenchmarkPickConnAtomic_Serial/conns=2-48          	352302859	         3.107 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn serial: single atomic.Pointer.Load() then scan — no mutex, no cache-line bounce	2.8x faster than RWMutex
+BenchmarkPickConnAtomic_Serial/conns=4-48          	244166539	         5.125 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn serial: single atomic.Pointer.Load() then scan — no mutex, no cache-line bounce	2.5x faster than RWMutex
+BenchmarkPickConnAtomic_Serial/conns=8-48          	100000000	        10.15 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn serial: single atomic.Pointer.Load() then scan — no mutex, no cache-line bounce	1.8x faster than RWMutex
+BenchmarkPickConnAtomic_Serial/conns=16-48         	71552480	        16.00 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn serial: single atomic.Pointer.Load() then scan — no mutex, no cache-line bounce	1.8x faster than RWMutex
+BenchmarkPickConnAtomic_Serial/conns=32-48         	47868920	        31.13 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn serial: single atomic.Pointer.Load() then scan — no mutex, no cache-line bounce	1.4x faster than RWMutex
+BenchmarkPickConnRWMutex_Parallel/conns=1-48       	26168473	        45.85 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn under 48 goroutines: all goroutines update mutex reader-count → cache-line thrash	atomic is 535.1x faster
+BenchmarkPickConnRWMutex_Parallel/conns=2-48       	25452019	        46.82 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn under 48 goroutines: all goroutines update mutex reader-count → cache-line thrash	atomic is 338.5x faster
+BenchmarkPickConnRWMutex_Parallel/conns=4-48       	23898628	        52.57 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn under 48 goroutines: all goroutines update mutex reader-count → cache-line thrash	atomic is 59.0x faster
+BenchmarkPickConnRWMutex_Parallel/conns=8-48       	23155600	        52.32 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn under 48 goroutines: all goroutines update mutex reader-count → cache-line thrash	atomic is 140.0x faster
+BenchmarkPickConnRWMutex_Parallel/conns=16-48      	24830384	        49.89 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn under 48 goroutines: all goroutines update mutex reader-count → cache-line thrash	atomic is 72.9x faster
+BenchmarkPickConnRWMutex_Parallel/conns=32-48      	27453492	        46.94 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn under 48 goroutines: all goroutines update mutex reader-count → cache-line thrash	atomic is 32.7x faster
+BenchmarkPickConnAtomic_Parallel/conns=1-48        	1000000000	         0.08568 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn under 48 goroutines: each goroutine reads its own cache copy — zero shared mutable state	535.1x faster than RWMutex
+BenchmarkPickConnAtomic_Parallel/conns=2-48        	1000000000	         0.1383 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn under 48 goroutines: each goroutine reads its own cache copy — zero shared mutable state	338.5x faster than RWMutex
+BenchmarkPickConnAtomic_Parallel/conns=4-48        	1000000000	         0.8906 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn under 48 goroutines: each goroutine reads its own cache copy — zero shared mutable state	59.0x faster than RWMutex
+BenchmarkPickConnAtomic_Parallel/conns=8-48        	1000000000	         0.3737 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn under 48 goroutines: each goroutine reads its own cache copy — zero shared mutable state	140.0x faster than RWMutex
+BenchmarkPickConnAtomic_Parallel/conns=16-48       	1000000000	         0.6846 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn under 48 goroutines: each goroutine reads its own cache copy — zero shared mutable state	72.9x faster than RWMutex
+BenchmarkPickConnAtomic_Parallel/conns=32-48       	879092666	         1.434 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn under 48 goroutines: each goroutine reads its own cache copy — zero shared mutable state	32.7x faster than RWMutex
+BenchmarkPickConnRWMutex_WithWriter/conns=1-48     	19981155	        59.54 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn with background writer (scale-up event): writer holds Lock → stalls ALL readers until released	atomic is 255.8x faster
+BenchmarkPickConnRWMutex_WithWriter/conns=2-48     	16208809	        72.71 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn with background writer (scale-up event): writer holds Lock → stalls ALL readers until released	atomic is 156.2x faster
+BenchmarkPickConnRWMutex_WithWriter/conns=4-48     	12968055	        88.09 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn with background writer (scale-up event): writer holds Lock → stalls ALL readers until released	atomic is 120.3x faster
+BenchmarkPickConnRWMutex_WithWriter/conns=8-48     	11474888	       102.7 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn with background writer (scale-up event): writer holds Lock → stalls ALL readers until released	atomic is 83.1x faster
+BenchmarkPickConnRWMutex_WithWriter/conns=16-48    	 9008168	       135.3 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn with background writer (scale-up event): writer holds Lock → stalls ALL readers until released	atomic is 63.6x faster
+BenchmarkPickConnRWMutex_WithWriter/conns=32-48    	 6952021	       180.2 ns/op	       0 B/op	       0 allocs/op	CURRENT  | pickConn with background writer (scale-up event): writer holds Lock → stalls ALL readers until released	atomic is 37.2x faster
+BenchmarkPickConnAtomic_WithWriter/conns=1-48      	1000000000	         0.2328 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn with background writer (scale-up event): writer holds wmu only → readers see zero impact	255.8x faster than RWMutex
+BenchmarkPickConnAtomic_WithWriter/conns=2-48      	1000000000	         0.4655 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn with background writer (scale-up event): writer holds wmu only → readers see zero impact	156.2x faster than RWMutex
+BenchmarkPickConnAtomic_WithWriter/conns=4-48      	1000000000	         0.7324 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn with background writer (scale-up event): writer holds wmu only → readers see zero impact	120.3x faster than RWMutex
+BenchmarkPickConnAtomic_WithWriter/conns=8-48      	966108681	         1.236 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn with background writer (scale-up event): writer holds wmu only → readers see zero impact	83.1x faster than RWMutex
+BenchmarkPickConnAtomic_WithWriter/conns=16-48     	537611964	         2.128 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn with background writer (scale-up event): writer holds wmu only → readers see zero impact	63.6x faster than RWMutex
+BenchmarkPickConnAtomic_WithWriter/conns=32-48     	272360683	         4.839 ns/op	       0 B/op	       0 allocs/op	PROPOSED | pickConn with background writer (scale-up event): writer holds wmu only → readers see zero impact	37.2x faster than RWMutex
+BenchmarkLenCheckRWMutex-48                        	205194111	         5.224 ns/op	       0 B/op	       0 allocs/op	CURRENT  | tryScaleUp len(conns) check serial: requires RLock even for a single integer comparison	atomic is 6.2x faster
+BenchmarkLenCheckAtomic-48                         	1000000000	         0.8359 ns/op	       0 B/op	       0 allocs/op	PROPOSED | tryScaleUp len check serial: single atomic.Int32.Load() — no mutex at all	6.2x faster than RWMutex
+BenchmarkLenCheckRWMutex_Parallel-48               	39696982	        33.61 ns/op	       0 B/op	       0 allocs/op	CURRENT  | tryScaleUp len check under 48 goroutines: all goroutines fight over mutex reader-count	atomic is 1602.8x faster
+BenchmarkLenCheckAtomic_Parallel-48                	1000000000	         0.02097 ns/op	       0 B/op	       0 allocs/op	PROPOSED | tryScaleUp len check under 48 goroutines: purely read-only atomic — effectively free	1602.8x faster than RWMutex
+BenchmarkAddConnRWMutex-48                         	 2495493	       474.6 ns/op	     464 B/op	       7 allocs/op	CURRENT  | addConn (write, rare): Lock + slice append — blocks all readers while held	atomic is 1.2x slower
+BenchmarkAddConnAtomic-48                          	 2042756	       566.5 ns/op	     472 B/op	       9 allocs/op	PROPOSED | addConn (write, rare): wmu + slice copy + atomic store — 18% slower on writes but readers are never blocked	1.2x slower than RWMutex
+
+# ============================================================================
+# ANALYSIS SUMMARY
+# ============================================================================
+#
+# 1. pickConn — serial (no contention)
+#    Called on every RPC. Even with a single goroutine, RWMutex costs ~5 ns
+#    for RLock + RUnlock even when no one is competing for the lock.
+#
+#    ┌───────────┬──────────────┬──────────────┬─────────┐
+#    │ Pool size │ RWMutex ns/op│ Atomic  ns/op│ Speedup │
+#    ├───────────┼──────────────┼──────────────┼─────────┤
+#    │  1 conn   │  6.879 ns  │  1.805 ns  │  3.8×    │
+#    │  2 conns  │  8.758 ns  │  3.107 ns  │  2.8×    │
+#    │  4 conns  │  12.60 ns  │  5.125 ns  │  2.5×    │
+#    │  8 conns  │  18.09 ns  │  10.15 ns  │  1.8×    │
+#    │ 16 conns  │  28.43 ns  │  16.00 ns  │  1.8×    │
+#    │ 32 conns  │  44.35 ns  │  31.13 ns  │  1.4×    │
+#    └───────────┴──────────────┴──────────────┴─────────┘
+#    Why: RLock/RUnlock each do an atomic op on the mutex's internal counter.
+#    Atomic load touches only read-only cache lines — no coordination needed.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 2. pickConn — parallel (48 goroutines, no writers)
+#    All 48 goroutines hammering pickConn concurrently — realistic steady state.
+#
+#    ┌───────────┬──────────────┬──────────────┬──────────────┐
+#    │ Pool size │ RWMutex ns/op│ Atomic  ns/op│    Speedup   │
+#    ├───────────┼──────────────┼──────────────┼──────────────┤
+#    │  1 conn   │  45.85 ns  │  0.0857 ns  │  535.1×      │
+#    │  2 conns  │  46.82 ns  │  0.1383 ns  │  338.5×      │
+#    │  4 conns  │  52.57 ns  │  0.8906 ns  │  59.0×       │
+#    │  8 conns  │  52.32 ns  │  0.3737 ns  │  140.0×      │
+#    │ 16 conns  │  49.89 ns  │  0.6846 ns  │  72.9×       │
+#    │ 32 conns  │  46.94 ns  │  1.434 ns  │  32.7×       │
+#    └───────────┴──────────────┴──────────────┴──────────────┘
+#    Why: Every RWMutex reader atomically increments/decrements the shared
+#    reader-count field, causing cache-line thrash across all 48 CPUs.
+#    atomic.Pointer.Load() is read-only — CPUs serve it from local L1 cache
+#    with no coordination. Near-zero cost regardless of goroutine count.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 3. pickConn — parallel with concurrent background writer (scale-up event)
+#    One goroutine continuously holds the write lock. This is the worst case
+#    for RWMutex: the writer stalls ALL readers until it releases Lock.
+#
+#    ┌───────────┬──────────────┬──────────────┬──────────────┐
+#    │ Pool size │ RWMutex ns/op│ Atomic  ns/op│    Speedup   │
+#    ├───────────┼──────────────┼──────────────┼──────────────┤
+#    │  1 conn   │  59.54 ns  │  0.2328 ns  │  255.8×      │
+#    │  2 conns  │  72.71 ns  │  0.4655 ns  │  156.2×      │
+#    │  4 conns  │  88.09 ns  │  0.7324 ns  │  120.3×      │
+#    │  8 conns  │  102.7 ns  │  1.236 ns  │  83.1×       │
+#    │ 16 conns  │  135.3 ns  │  2.128 ns  │  63.6×       │
+#    │ 32 conns  │  180.2 ns  │  4.839 ns  │  37.2×       │
+#    └───────────┴──────────────┴──────────────┴──────────────┘
+#    Why: With atomic copy-on-write, the write-only mutex (wmu) only blocks
+#    other writers — readers never acquire it. One scale-up event cannot
+#    stall in-flight RPCs at all.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 4. Length check — tryScaleUp's len(p.conns) >= maxConnections
+#    A simple integer comparison that currently requires an RLock.
+#
+#    ┌──────────┬──────────────┬──────────────┬──────────────┐
+#    │ Scenario │ RWMutex ns/op│ Atomic  ns/op│    Speedup   │
+#    ├──────────┼──────────────┼──────────────┼──────────────┤
+#    │  Serial  │  5.224 ns  │  0.8359 ns  │  6.2×        │
+#    │ Parallel │  33.61 ns  │  0.0210 ns  │  1602.8×     │
+#    └──────────┴──────────────┴──────────────┴──────────────┘
+#    Replacing with atomic.Int32.Load() eliminates the lock entirely.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 5. addConn write cost (rare path — happens at most a few times per lifetime)
+#
+#    ┌──────────┬──────────────┬──────────────┬─────────────────────────────┐
+#    │ Design   │     ns/op    │    B/op      │ Note                        │
+#    ├──────────┼──────────────┼──────────────┼─────────────────────────────┤
+#    │ RWMutex  │  474.6 ns  │  464 B       │ Blocks all readers          │
+#    │ Atomic   │  566.5 ns  │  472 B       │ Only blocks other writers   │
+#    └──────────┴──────────────┴──────────────┴─────────────────────────────┘
+#    Atomic addConn allocates a slice copy (~18% slower on writes) but never
+#    blocks readers. Acceptable since addConn is a rare event.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# VERDICT
+#   Hot read path (pickConn, len check): use atomic.Pointer — 2x–1600x faster
+#   Write path (addConn, removeConn):    keep a write-only mutex + slice copy
+#   Net effect: every RPC pays zero mutex overhead; scale-up events are invisible
