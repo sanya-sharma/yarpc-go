@@ -71,7 +71,6 @@ func TransportSpec(opts ...Option) yarpcconfig.TransportSpec {
 //	    clientMaxHeaderListSize: 1024
 //	    serverMaxHeaderListSize: 2048
 //	    clientConnectionPool:
-//	      dynamicScalingEnabled: true
 //	      maxConcurrentStreams: 250
 //	      scaleUpThreshold: 0.8
 //	      minConnections: 1
